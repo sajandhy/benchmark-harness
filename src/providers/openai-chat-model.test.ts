@@ -68,13 +68,14 @@ describe("openai-chat-model", () => {
     );
     assertSuccess(exit);
     expect(request?.url).toBe("http://127.0.0.1:8000/v1/chat/completions");
+    expect(request?.signal).toBeDefined();
     const body: unknown = JSON.parse(await request!.clone().text());
     expect(body).toMatchObject({
       model: "amd/GLM-5.3-Quark-MXFP4-AttnFP8",
       messages: [{ role: "user", content: "question" }],
       temperature: 0.5,
-      max_tokens: 8192,
     });
+    expect(body).not.toHaveProperty("max_tokens");
     expect(exit.value.completion).toBe("Answer: B");
   });
 });

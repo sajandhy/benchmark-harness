@@ -36,6 +36,39 @@ export function localOpenAIChatBaseUrlFromEnv(
   return localRoot;
 }
 
+function envMaxTokens(): number | undefined {
+  const raw = process.env["VLLM_MAX_TOKENS"];
+  if (raw === undefined || raw.length === 0) {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/** Bun's default fetch abort is ~5 minutes; GPQA + cudagraph NONE exceeds that. */
+const DEFAULT_FETCH_TIMEOUT_MS = 30 * 60 * 1000;
+
+function fetchTimeoutMs(generateConfig: GenerateConfig): number {
+  if (generateConfig.timeoutMs !== undefined && generateConfig.timeoutMs > 0) {
+    return generateConfig.timeoutMs;
+  }
+  const raw = process.env["VLLM_TIMEOUT_MS"];
+  if (raw !== undefined && raw.length > 0) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_FETCH_TIMEOUT_MS;
+}
+
+function isAbortError(e: unknown): boolean {
+  if (e instanceof Error) {
+    return e.name === "TimeoutError" || e.name === "AbortError";
+  }
+  return false;
+}
+
 function chatMessages(
   messages: readonly ModelMessage[]
 ): { role: string; content: string }[] {
@@ -65,11 +98,16 @@ export function makeOpenAIChatModelLayer(
       return tryPromise({
         try: async () => {
           const started = Date.now();
+          // GLM-5.3 emits a separate reasoning stream before `content`. A
+          // capped budget is spent on reasoning and returns empty content,
+          // which the MCQ scorer records as "No answer found". Send no cap
+          // unless asked, so the server allows up to max_model_len.
+          const maxTokens = generateConfig.maxTokens ?? envMaxTokens();
           const body: Record<string, unknown> = {
             model: config.model,
             messages: chatMessages(messages),
             temperature: generateConfig.temperature,
-            max_tokens: generateConfig.maxTokens ?? 8192,
+            ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
           };
           const resp = await fetch(`${baseUrl}/chat/completions`, {
             method: "POST",
@@ -78,6 +116,7 @@ export function makeOpenAIChatModelLayer(
               Authorization: `Bearer ${config.apiKey}`,
             },
             body: JSON.stringify(body),
+            signal: AbortSignal.timeout(fetchTimeoutMs(generateConfig)),
           });
           const text = await resp.text();
           if (!resp.ok) {
@@ -97,12 +136,20 @@ export function makeOpenAIChatModelLayer(
           };
           return output;
         },
-        catch: (e) =>
-          e instanceof ModelError
-            ? e
-            : new ModelError({
-                message: e instanceof Error ? e.message : String(e),
-              }),
+        catch: (e) => {
+          if (e instanceof ModelError) {
+            return e;
+          }
+          if (isAbortError(e)) {
+            return new ModelError({
+              status: 504,
+              message: e instanceof Error ? e.message : "Request timed out",
+            });
+          }
+          return new ModelError({
+            message: e instanceof Error ? e.message : String(e),
+          });
+        },
       });
     },
   };
