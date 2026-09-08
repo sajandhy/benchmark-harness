@@ -56,13 +56,66 @@ function withFunctionCall(stream: string): string {
 
 describe("openrouter-model", () => {
   let restore: (() => void) | undefined;
+  const previousVllm = process.env["VLLM_BASE_URL"];
+  const previousOpenai = process.env["OPENAI_BASE_URL"];
 
   afterEach(() => {
     restore?.();
     restore = undefined;
+    if (previousVllm === undefined) {
+      delete process.env["VLLM_BASE_URL"];
+    } else {
+      process.env["VLLM_BASE_URL"] = previousVllm;
+    }
+    if (previousOpenai === undefined) {
+      delete process.env["OPENAI_BASE_URL"];
+    } else {
+      process.env["OPENAI_BASE_URL"] = previousOpenai;
+    }
+  });
+
+  it("uses chat/completions when VLLM_BASE_URL is set", async () => {
+    process.env["VLLM_BASE_URL"] = "http://127.0.0.1:8000/v1";
+    const originalFetch = globalThis.fetch;
+    let request: Request | undefined;
+    globalThis.fetch = async (input, init) => {
+      request = input instanceof Request ? input : new Request(input, init);
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "Answer: A" } }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    };
+    restore = () => {
+      globalThis.fetch = originalFetch;
+    };
+
+    const exit = await runPromiseExit(
+      gen(function* () {
+        const model = yield* Model;
+        return yield* model.generate([{ role: "user", content: "question" }], {
+          temperature: 0,
+          reasoningEffort: "high",
+        });
+      }).pipe(
+        provide(
+          makeOpenRouterModelLayer({
+            model: "amd/GLM-5.3-Quark-MXFP4-AttnFP8",
+            apiKey: "EMPTY",
+            baseUrl: "https://openrouter.ai",
+          }).pipe(layerProvide(FetchHttpClient.layer))
+        )
+      )
+    );
+    assertSuccess(exit);
+    expect(request?.url).toBe("http://127.0.0.1:8000/v1/chat/completions");
+    expect(exit.value.completion).toBe("Answer: A");
   });
 
   it("uses the Responses endpoint with streaming and cache control", async () => {
+    delete process.env["VLLM_BASE_URL"];
+    delete process.env["OPENAI_BASE_URL"];
     const stream = withFunctionCall(
       await readFile(
         new URL(
@@ -143,6 +196,8 @@ describe("openrouter-model", () => {
   });
 
   it("sends trace headers on the OpenRouter request and never overrides auth", async () => {
+    delete process.env["VLLM_BASE_URL"];
+    delete process.env["OPENAI_BASE_URL"];
     const stream = await readFile(
       new URL(
         "../../test/fixtures/advisor-responses-stream.sse",

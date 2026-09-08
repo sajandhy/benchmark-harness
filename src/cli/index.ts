@@ -29,6 +29,7 @@ import { runHarnessPromise } from "../internal/effect-logger";
 import { Either } from "../internal/either";
 import { definedValues, isMember } from "../internal/guards";
 import { parseSchema } from "../internal/zod";
+import { localOpenAIChatBaseUrlFromEnv } from "../providers/openai-chat-model";
 import { makeLocalResultStore } from "../results/result-store";
 import { datasetSizeById, runBenchmarkById } from "../runner/run-by-id";
 
@@ -129,6 +130,14 @@ function resolveSessionId(): string {
 }
 
 function resolveApiKey(): string {
+  const localRoot = localOpenAIChatBaseUrlFromEnv();
+  if (localRoot !== undefined) {
+    return (
+      process.env["OPENAI_API_KEY"] ??
+      process.env["OPENROUTER_API_KEY"] ??
+      "EMPTY"
+    );
+  }
   const primaryOpt = runSync(string("OPENROUTER_API_KEY").pipe(option));
   const fallbackOpt = runSync(
     string("BENCHMARKING_OPENROUTER_API_KEY").pipe(option)

@@ -10,6 +10,10 @@ import {
   responsesTurnToModelOutput,
   toolDefinitionToResponses,
 } from "./messages-to-responses";
+import {
+  localOpenAIChatBaseUrlFromEnv,
+  makeOpenAIChatModelLayer,
+} from "./openai-chat-model";
 import { makeResponsesModelLayer, ResponsesModel } from "./responses-model";
 
 export {
@@ -34,6 +38,14 @@ export function normalizeBaseUrl(baseUrl: string): string {
 export function makeOpenRouterModelLayer(
   config: OpenRouterModelConfig
 ): Layer<Model> {
+  const localRoot = localOpenAIChatBaseUrlFromEnv();
+  if (localRoot !== undefined) {
+    return makeOpenAIChatModelLayer({
+      model: config.model,
+      apiKey: config.apiKey.length > 0 ? config.apiKey : "EMPTY",
+      baseUrl: localRoot,
+    });
+  }
   const responsesLayer = makeResponsesModelLayer(
     definedValues({
       model: config.model,
