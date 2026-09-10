@@ -109,6 +109,10 @@ export function makeOpenAIChatModelLayer(
             temperature: generateConfig.temperature,
             ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
           };
+          // Bun's fetch has its own idle timeout (default ~5 min) that is
+          // independent of AbortSignal. VLLM_TIMEOUT_MS only moved the
+          // signal; without `timeout`, NONE-mode GPQA still aborted early.
+          const timeoutMs = fetchTimeoutMs(generateConfig);
           const resp = await fetch(`${baseUrl}/chat/completions`, {
             method: "POST",
             headers: {
@@ -116,8 +120,9 @@ export function makeOpenAIChatModelLayer(
               Authorization: `Bearer ${config.apiKey}`,
             },
             body: JSON.stringify(body),
-            signal: AbortSignal.timeout(fetchTimeoutMs(generateConfig)),
-          });
+            signal: AbortSignal.timeout(timeoutMs),
+            timeout: timeoutMs,
+          } as RequestInit);
           const text = await resp.text();
           if (!resp.ok) {
             throw new ModelError({

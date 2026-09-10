@@ -115,8 +115,15 @@ export const gpqaScorer = mcqScorer;
 export function makeGpqaDatasetLayer(
   retryConfig?: RetryConfig
 ): Layer<Dataset> {
+  const subdomain = process.env["GPQA_SUBDOMAIN"]?.trim();
   return makeHfDatasetLayer({
     ...GPQA_DATASET,
+    ...(subdomain
+      ? {
+          recordFilter: (record: Readonly<Record<string, unknown>>) =>
+            record["Subdomain"] === subdomain,
+        }
+      : {}),
     ...definedValues({
       retry: retryConfig,
     }),

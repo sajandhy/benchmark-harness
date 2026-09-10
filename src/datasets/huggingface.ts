@@ -28,7 +28,7 @@ import {
   whileInput,
 } from "effect/Schedule";
 import type { Stream } from "effect/Stream";
-import { paginateChunkEffect } from "effect/Stream";
+import { paginateChunkEffect, runCount } from "effect/Stream";
 
 import type { Sample } from "../harness/core";
 import { DatasetError } from "../harness/core";
@@ -128,6 +128,10 @@ export interface HfDatasetConfig {
     record: Readonly<Record<string, unknown>>,
     index: number
   ) => Sample;
+  readonly recordFilter?: (
+    record: Readonly<Record<string, unknown>>,
+    index: number
+  ) => boolean;
   readonly pageSize?: number;
   readonly retry?: RetryConfig;
   readonly hfToken?: string;
@@ -254,6 +258,7 @@ export function paginateHfRows<T>(opts: {
   readonly dataset?: string;
   readonly start?: number;
   readonly end?: number;
+  readonly filterRow?: (row: HfRow, index: number) => boolean;
   readonly mapRow: (row: HfRow, index: number) => T;
 }): Stream<T, DatasetError> {
   const start = opts.start ?? 0;
@@ -267,7 +272,10 @@ export function paginateHfRows<T>(opts: {
             ? Math.min(page.num_rows_total, requestedEnd)
             : page.num_rows_total;
         const inRange = page.rows.filter(
-          (r) => r.row_idx >= start && r.row_idx < end
+          (r) =>
+            r.row_idx >= start &&
+            r.row_idx < end &&
+            (opts.filterRow?.(r, r.row_idx) ?? true)
         );
         const mapped = Either.try(() =>
           inRange.map((r) => opts.mapRow(r, r.row_idx))
@@ -299,9 +307,6 @@ export function makeHfDatasetLayer(config: HfDatasetConfig): Layer<Dataset> {
     const client = yield* HttpClient.HttpClient;
     const store = config.cacheStore ?? resolveCacheStore();
     const fetchPage = makeHfPageFetcher(config, client, store);
-    const sizeEffect: Effect<number, DatasetError> = fetchPage(0, 1).pipe(
-      map((page) => page.num_rows_total)
-    );
     const stream = (
       opts?: DatasetStreamOptions
     ): Stream<Sample, DatasetError> => {
@@ -311,9 +316,17 @@ export function makeHfDatasetLayer(config: HfDatasetConfig): Layer<Dataset> {
         dataset: config.dataset,
         start: opts?.start,
         end: opts?.end,
+        filterRow:
+          config.recordFilter === undefined
+            ? undefined
+            : (row, index) => config.recordFilter!(row.row, index),
         mapRow: (row, index) => config.recordToSample(row.row, index),
       });
     };
+    const sizeEffect: Effect<number, DatasetError> =
+      config.recordFilter === undefined
+        ? fetchPage(0, 1).pipe(map((page) => page.num_rows_total))
+        : stream().pipe(runCount);
     return Dataset.of({ stream, size: sizeEffect });
   });
   return effect(Dataset, makeService).pipe(provide(FetchHttpClient.layer));
